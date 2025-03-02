@@ -8,7 +8,7 @@ const app = express();
 app.use(express.json());
 
 // Usar las rutas importadas
-app.use('/', neo4jRoutes);
+app.use('/neo4j', neo4jRoutes);
 
 // Manejo de rutas no encontradas
 app.use((req, res) => {
