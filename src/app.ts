@@ -7,6 +7,7 @@ import routeRoutes from './routes/route.routes';
 import invoiceRoutes from './routes/invoice.routes';
 import providerRoutes from './routes/provider.routes';
 import uploadInfoRoutes from './routes/uploadInfo.routes';
+import utilsRoutes from './routes/utils.routes';
 
 const app = express();
 
@@ -21,6 +22,7 @@ app.use('/route', routeRoutes);
 app.use('/invoices', invoiceRoutes);
 app.use('/providers', providerRoutes);
 app.use('/Info', uploadInfoRoutes);
+app.use('/utils', utilsRoutes);
 
 // Manejo de rutas no encontradas
 app.use((req, res) => {
