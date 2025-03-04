@@ -80,10 +80,18 @@ export const getAllProducts = async (req: Request, res: Response): Promise<void>
       console.log(query);
 
       const result = await session.run(query);
-      const products = result.records.map(record => ({
-          id: record.get('id'), // ✅ Ahora `id` es un string
-          ...record.get('p').properties
-      }));
+      const products = result.records.map(record => {
+        const properties = record.get('p').properties;
+        return {
+            id: record.get('id'), // esto ya es un string por el toString(elementId(p))
+            Category: properties.Category,
+            Price: properties.Price,
+            Expiration_date: properties.Expiration_date,
+            Voided: properties.Voided,
+            Name: properties.Name,
+            TagsArray: properties.TagsArray
+        };
+      });
 
       // 📌 Obtener total de productos
       const countResult = await session.run(`
@@ -91,7 +99,8 @@ export const getAllProducts = async (req: Request, res: Response): Promise<void>
           WHERE p.Voided = false
           RETURN count(p) AS total
       `);
-      const totalProducts = countResult.records[0]?.get("total") || 0;
+      const totalProducts = countResult.records[0]?.get("total").toNumber() || 0;
+      
 
       res.json({
           page: pageNumber,
