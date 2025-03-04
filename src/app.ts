@@ -1,5 +1,6 @@
 // src/app.ts
 import express from 'express';
+import cors from 'cors'; // Importar CORS
 import neo4jRoutes from './routes/neo4j.routes';
 import productRoutes from './routes/product.routes';
 import branchOfficeRoutes from './routes/branchOffice.routes';
@@ -10,6 +11,9 @@ import uploadInfoRoutes from './routes/uploadInfo.routes';
 import utilsRoutes from './routes/utils.routes';
 
 const app = express();
+
+// Middleware para habilitar CORS
+app.use(cors());
 
 // Middleware para parsear JSON
 app.use(express.json());
