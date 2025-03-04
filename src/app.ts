@@ -14,7 +14,6 @@ const app = express();
 
 // Middleware para habilitar CORS
 app.use(cors());
-
 // Middleware para parsear JSON
 app.use(express.json());
 
