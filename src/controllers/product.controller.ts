@@ -52,7 +52,7 @@ export const getAllProducts = async (req: Request, res: Response): Promise<void>
     const session = driver.session();
 
     try {
-        const query = `MATCH (p:Product) WHERE p.Voided = false RETURN elementId(p) AS id, p`;
+        const query = `MATCH (p:Product) WHERE p.Voided = false RETURN elementId(p) AS id, p LIMIT 10`;
         const result = await session.run(query);
 
         const products = result.records.map(record => ({
@@ -85,7 +85,7 @@ export const updateProduct = async (req: Request, res: Response): Promise<void> 
         SET p.Name = $name,
             p.Category = $category,
             p.Price = $price,
-            p.Tags = $tags,
+            p.TagsArray = $tags,
             p.Expiration_date = date($expiration_date)
         RETURN elementId(p) AS id, p
         `;
@@ -241,4 +241,62 @@ export const mostRequestedProductBetweenBranches = async (req: Request, res: Res
     } finally {
       await session.close();
     }
+};
+
+
+export const getProductRelationshipsById = async (req: Request, res: Response): Promise<void> => {
+  const { id } = req.params;
+
+  const driver = Neo4jDriverSingleton.getInstance();
+  const session = driver.session();
+  try {
+      const query = `
+          MATCH (p1:Product)-[r]->(p2:Product)
+          WHERE elementId(p1) = $productId AND p2.Voided = false
+          RETURN elementId(r) AS id, elementId(p1) AS source, elementId(p2) AS target, type(r) AS type
+      `;
+
+      const result = await session.run(query, { productId: id });
+
+      const relationships = result.records.map(record => ({
+          id: record.get('id'),
+          source: record.get('source'),
+          target: record.get('target'),
+          type: record.get('type') // opcional, por si quieres mostrar el tipo de relación
+      }));
+
+      res.json(relationships);
+  } catch (error) {
+      res.status(500).json({ message: 'Error al obtener relaciones del producto', error });
+  } finally {
+      await session.close();
+  }
+};
+
+
+export const createProductRelationship = async (req: Request, res: Response): Promise<void> => {
+  const { sourceId, targetId } = req.body;
+
+  if (!sourceId || !targetId) {
+      res.status(400).json({ message: "sourceId y targetId son requeridos" });
+      return;
+  }
+
+  const driver = Neo4jDriverSingleton.getInstance();
+  const session = driver.session();
+
+  try {
+      const query = `
+          MATCH (p1:Product), (p2:Product)
+          WHERE elementId(p1) = $sourceId AND elementId(p2) = $targetId
+          MERGE (p1)-[:SEEMS]->(p2)
+      `;
+      await session.run(query, { sourceId, targetId });
+
+      res.status(201).json({ message: 'Relación creada exitosamente' });
+  } catch (error) {
+      res.status(500).json({ message: 'Error al crear relación', error });
+  } finally {
+      await session.close();
+  }
 };
