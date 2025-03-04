@@ -43,22 +43,110 @@ export const getAllRoutes = async (req: Request, res: Response): Promise<void> =
     const session = Neo4jDriverSingleton.getInstance().session();
 
     try {
-        const query = `MATCH (r:Route) WHERE r.Voided = false RETURN elementId(r) AS id, r`;
+        let { page, limit } = req.query;
+
+        const pageNumber = parseInt(page as string, 10) || 1;
+        const limitNumber = parseInt(limit as string, 10) || 10;
+
+        if (isNaN(pageNumber) || pageNumber < 1) {
+            res.status(400).json({ message: "El parámetro 'page' debe ser un número entero mayor a 0" });
+            return;
+        }
+
+        if (isNaN(limitNumber) || limitNumber < 1 || limitNumber > 100) {
+            res.status(400).json({ message: "El parámetro 'limit' debe ser un número entre 1 y 100" });
+            return;
+        }
+
+        const offset = (pageNumber - 1) * limitNumber;
+
+        // 🔍 Query combinada para traer rutas y sus relaciones (opcionalmente)
+        const query = `
+            MATCH (r:Route)
+            WHERE r.Voided = false
+            OPTIONAL MATCH (r)-[leavesOn:LEAVES_ON]->(b:BranchOffice)
+            OPTIONAL MATCH (r)-[carry:CARRY]->(p:Product)
+            RETURN 
+                toString(elementId(r)) AS routeId, 
+                r,
+                toString(elementId(b)) AS branchOfficeId,
+                b,
+                type(leavesOn) AS leavesOnType,
+                toString(elementId(p)) AS productId,
+                p,
+                type(carry) AS carryType
+            ORDER BY r.Name ASC
+            SKIP ${offset} LIMIT ${limitNumber}
+        `;
+
         const result = await session.run(query);
 
-        const routes = result.records.map(record => ({
-            id: record.get('id'),
-            ...record.get('r').properties
-        }));
+        // Mapeo por cada ruta, agregando branch office y products si existen
+        const routeMap = new Map<string, any>();
 
-        res.json(routes);
+        result.records.forEach(record => {
+            const routeId = record.get('routeId');
+            const routeProperties = record.get('r').properties;
+
+            if (!routeMap.has(routeId)) {
+                routeMap.set(routeId, {
+                    id: routeId,
+                    ...routeProperties,
+                    branchOffice: null,     // Default si no hay relación
+                    products: []             // Default vacío si no hay relación
+                });
+            }
+
+            // Manejo de la relación leaves_on (branch office)
+            const branchOfficeId = record.get('branchOfficeId');
+            if (branchOfficeId) {
+                const branchOfficeProperties = record.get('b').properties;
+                routeMap.get(routeId).branchOffice = {
+                    id: branchOfficeId,
+                    ...branchOfficeProperties,
+                    relationshipType: record.get('leavesOnType')
+                };
+            }
+
+            // Manejo de la relación carry (products)
+            const productId = record.get('productId');
+            if (productId) {
+                const productProperties = record.get('p').properties;
+                routeMap.get(routeId).products.push({
+                    id: productId,
+                    ...productProperties,
+                    relationshipType: record.get('carryType')
+                });
+            }
+        });
+
+        const routes = Array.from(routeMap.values());
+
+        // 📊 Contar total de rutas
+        const countResult = await session.run(`
+            MATCH (r:Route)
+            WHERE r.Voided = false
+            RETURN count(r) AS total
+        `);
+
+        const totalRoutes = countResult.records[0]?.get("total").toNumber() || 0;
+
+        res.json({
+            page: pageNumber,
+            limit: limitNumber,
+            totalPages: Math.ceil(totalRoutes / limitNumber),
+            totalRoutes,
+            routes
+        });
 
     } catch (error) {
+        console.error("❌ Error al obtener rutas:", error);
         res.status(500).json({ message: 'Error al obtener rutas', error });
     } finally {
         await session.close();
     }
 };
+
 
 // Actualizar ruta
 export const updateRoute = async (req: Request, res: Response): Promise<void> => {

@@ -38,20 +38,97 @@ export const createInvoice = async (req: Request, res: Response): Promise<void> 
 };
 
 // Obtener todas las facturas activas
-export const getInvoices = async (_req: Request, res: Response): Promise<void> => {
-    const driver = Neo4jDriverSingleton.getInstance();
-    const session = driver.session();
+export const getInvoices = async (req: Request, res: Response): Promise<void> => {
+    const session = Neo4jDriverSingleton.getInstance().session();
 
     try {
-        const result = await session.run(`MATCH (i:Invoice) WHERE i.Voided = false RETURN elementId(i) AS id, i`);
-        res.json(result.records.map(record => ({ id: record.get("id"), ...record.get("i").properties })));
+        let { page, limit } = req.query;
+
+        const pageNumber = parseInt(page as string, 10) || 1;
+        const limitNumber = parseInt(limit as string, 10) || 10;
+
+        if (isNaN(pageNumber) || pageNumber < 1) {
+            res.status(400).json({ message: "El parámetro 'page' debe ser un número entero mayor a 0" });
+            return;
+        }
+
+        if (isNaN(limitNumber) || limitNumber < 1 || limitNumber > 100) {
+            res.status(400).json({ message: "El parámetro 'limit' debe ser un número entre 1 y 100" });
+            return;
+        }
+
+        const offset = (pageNumber - 1) * limitNumber;
+
+        // 🔍 Query para obtener facturas y productos relacionados
+        const query = `
+            MATCH (i:Invoice)
+            WHERE i.Voided = false
+            OPTIONAL MATCH (i)-[r:CONTAINS]->(p:Product)
+            RETURN 
+                toString(elementId(i)) AS invoiceId, 
+                i, 
+                toString(elementId(p)) AS productId, 
+                p, 
+                type(r) AS relationshipType
+            ORDER BY i.Date ASC
+            SKIP ${offset} LIMIT ${limitNumber}
+        `;
+
+        const result = await session.run(query);
+
+        // Mapeo y agrupación por factura
+        const invoiceMap = new Map<string, any>();
+
+        result.records.forEach(record => {
+            const invoiceId = record.get('invoiceId');
+            const invoiceProperties = record.get('i').properties;
+
+            if (!invoiceMap.has(invoiceId)) {
+                invoiceMap.set(invoiceId, {
+                    id: invoiceId,
+                    ...invoiceProperties,
+                    products: []  // Inicialmente vacío
+                });
+            }
+
+            const productId = record.get('productId');
+            if (productId) {
+                const productProperties = record.get('p').properties;
+                invoiceMap.get(invoiceId).products.push({
+                    id: productId,
+                    ...productProperties,
+                    relationshipType: record.get('relationshipType')
+                });
+            }
+        });
+
+        const invoices = Array.from(invoiceMap.values());
+
+        // 📊 Contar total de facturas (independiente de la paginación)
+        const countResult = await session.run(`
+            MATCH (i:Invoice)
+            WHERE i.Voided = false
+            RETURN count(i) AS total
+        `);
+
+        const totalInvoices = countResult.records[0]?.get("total").toNumber() || 0;
+
+        res.json({
+            page: pageNumber,
+            limit: limitNumber,
+            totalPages: Math.ceil(totalInvoices / limitNumber),
+            totalInvoices,
+            invoices
+        });
 
     } catch (error) {
-        res.status(500).json({ message: "Error al obtener facturas", error });
+        console.error("❌ Error al obtener facturas:", error);
+        res.status(500).json({ message: 'Error al obtener facturas', error });
     } finally {
         await session.close();
     }
 };
+
 
 // Soft delete (marcar factura como eliminada)
 export const softDeleteInvoice = async (req: Request, res: Response): Promise<void> => {

@@ -44,22 +44,94 @@ export const getAllBranchOffices = async (req: Request, res: Response): Promise<
     const session = Neo4jDriverSingleton.getInstance().session();
 
     try {
-        const query = `MATCH (b:BranchOffice) WHERE b.Voided = false RETURN elementId(b) AS id, b`;
+        let { page, limit } = req.query;
+
+        const pageNumber = parseInt(page as string, 10) || 1;
+        const limitNumber = parseInt(limit as string, 10) || 10;
+
+        if (isNaN(pageNumber) || pageNumber < 1) {
+            res.status(400).json({ message: "El parámetro 'page' debe ser un número entero mayor a 0" });
+            return;
+        }
+
+        if (isNaN(limitNumber) || limitNumber < 1 || limitNumber > 100) {
+            res.status(400).json({ message: "El parámetro 'limit' debe ser un número entre 1 y 100" });
+            return;
+        }
+
+        const offset = (pageNumber - 1) * limitNumber;
+
+        // 🔍 Query para traer sucursales y sus facturas asociadas (si tienen), usando la relación 'emits'
+        const query = `
+            MATCH (b:BranchOffice)
+            WHERE b.Voided = false
+            OPTIONAL MATCH (b)-[r:EMITS]->(i:Invoice)
+            RETURN 
+                toString(elementId(b)) AS branchOfficeId, 
+                b, 
+                toString(elementId(i)) AS invoiceId, 
+                i, 
+                type(r) AS relationshipType
+            ORDER BY b.Name ASC
+            SKIP ${offset} LIMIT ${limitNumber}
+        `;
+
         const result = await session.run(query);
 
-        const branches = result.records.map(record => ({
-            id: record.get('id'),
-            ...record.get('b').properties
-        }));
+        // Mapeo y agrupación por sucursal
+        const branchMap = new Map<string, any>();
 
-        res.json(branches);
+        result.records.forEach(record => {
+            const branchOfficeId = record.get('branchOfficeId');
+            const branchProperties = record.get('b').properties;
+
+            if (!branchMap.has(branchOfficeId)) {
+                branchMap.set(branchOfficeId, {
+                    id: branchOfficeId,
+                    ...branchProperties,
+                    invoices: []  // Inicialmente vacío
+                });
+            }
+
+            const invoiceId = record.get('invoiceId');
+            if (invoiceId) {
+                const invoiceProperties = record.get('i').properties;
+                branchMap.get(branchOfficeId).invoices.push({
+                    id: invoiceId,
+                    ...invoiceProperties,
+                    relationshipType: record.get('relationshipType')
+                });
+            }
+        });
+
+        const branchOffices = Array.from(branchMap.values());
+
+        // 📊 Contar total de sucursales
+        const countResult = await session.run(`
+            MATCH (b:BranchOffice)
+            WHERE b.Voided = false
+            RETURN count(b) AS total
+        `);
+
+        const totalBranches = countResult.records[0]?.get("total").toNumber() || 0;
+
+        res.json({
+            page: pageNumber,
+            limit: limitNumber,
+            totalPages: Math.ceil(totalBranches / limitNumber),
+            totalBranches,
+            branchOffices
+        });
 
     } catch (error) {
+        console.error("❌ Error al obtener sucursales:", error);
         res.status(500).json({ message: 'Error al obtener sucursales', error });
     } finally {
         await session.close();
     }
 };
+
+
 
 // Actualizar sucursal
 export const updateBranchOffice = async (req: Request, res: Response): Promise<void> => {
