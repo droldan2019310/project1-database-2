@@ -46,26 +46,67 @@ export const createProduct = async (req: Request, res: Response): Promise<void> 
     }
 };
 
-// Leer todos los productos
 export const getAllProducts = async (req: Request, res: Response): Promise<void> => {
-    const driver = Neo4jDriverSingleton.getInstance();
-    const session = driver.session();
+  const driver = Neo4jDriverSingleton.getInstance();
+  const session = driver.session();
 
-    try {
-        const query = `MATCH (p:Product) WHERE p.Voided = false RETURN elementId(p) AS id, p LIMIT 10`;
-        const result = await session.run(query);
+  try {
+      let { page, limit } = req.query;
 
-        const products = result.records.map(record => ({
-        id: record.get('id'),
-        ...record.get('p').properties
-        }));
+      const pageNumber = parseInt(page as string, 10) || 1;
+      const limitNumber = parseInt(limit as string, 10) || 10;
 
-        res.json(products);
-    } catch (error) {
-        res.status(500).json({ message: 'Error al obtener productos', error });
-    } finally {
-        await session.close();
-    }
+      if (isNaN(pageNumber) || pageNumber < 1) {
+          res.status(400).json({ message: "El parámetro 'page' debe ser un número entero mayor a 0" });
+          return;
+      }
+
+      if (isNaN(limitNumber) || limitNumber < 1 || limitNumber > 100) {
+          res.status(400).json({ message: "El parámetro 'limit' debe ser un número entre 1 y 100" });
+          return;
+      }
+
+      const offset = (pageNumber - 1) * limitNumber; // ✅ Ya es un número entero puro
+
+      const query = `
+          MATCH (p:Product)
+          WHERE p.Voided = false
+          RETURN toString(elementId(p)) AS id, p
+          ORDER BY p.Name ASC
+          SKIP ${offset} LIMIT ${limitNumber}
+      `;
+
+      console.log("🔍 Ejecutando query en Neo4j:");
+      console.log(query);
+
+      const result = await session.run(query);
+      const products = result.records.map(record => ({
+          id: record.get('id'), // ✅ Ahora `id` es un string
+          ...record.get('p').properties
+      }));
+
+      // 📌 Obtener total de productos
+      const countResult = await session.run(`
+          MATCH (p:Product)
+          WHERE p.Voided = false
+          RETURN count(p) AS total
+      `);
+      const totalProducts = countResult.records[0]?.get("total") || 0;
+
+      res.json({
+          page: pageNumber,
+          limit: limitNumber,
+          totalPages: Math.ceil(totalProducts / limitNumber),
+          totalProducts,
+          products
+      });
+
+  } catch (error) {
+      console.error("❌ Error al obtener productos:", error);
+      res.status(500).json({ message: "Error al obtener productos", error });
+  } finally {
+      await session.close();
+  }
 };
 
 // Actualizar producto
