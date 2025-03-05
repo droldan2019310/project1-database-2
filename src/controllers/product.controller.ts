@@ -218,9 +218,10 @@ export const mostPurchasedProduct = async (req: Request, res: Response): Promise
       res.json({
         id: record.get('id'),
         ...record.get('p').properties,
-        purchaseCount: record.get('purchaseCount').toNumber()
+        purchaseCount: record.get('purchaseCount')
       });
     } catch (error) {
+      console.log(error);
       res.status(500).json({ message: 'Error al obtener producto más comprado', error });
     } finally {
       await session.close();

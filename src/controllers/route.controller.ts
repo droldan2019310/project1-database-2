@@ -262,10 +262,11 @@ export const longestTimeRoute = async (req: Request, res: Response): Promise<voi
         res.json({
             id: result.records[0].get('id'),
             ...result.records[0].get('r').properties,
-            duration: result.records[0].get('duration').toString()
+            duration: result.records[0].get('duration')
         });
 
     } catch (error) {
+        console.log(error);
         res.status(500).json({ message: 'Error al obtener ruta más larga', error });
     } finally {
         await session.close();

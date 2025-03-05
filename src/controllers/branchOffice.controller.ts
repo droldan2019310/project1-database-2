@@ -227,23 +227,46 @@ export const branchesNeedingBetterDistribution = async (req: Request, res: Respo
 
     try {
         const query = `
-            MATCH (pr:Provider)-[p:PROVIDES_TO]->(b:BranchOffice)
-            WHERE p.Priority >= 4
-            RETURN elementId(b) AS id, b, p.Priority
-            ORDER BY p.Priority DESC
+            MATCH (pr:Provider)-[:PROVIDES_TO]->(b:BranchOffice)<-[:LEAVES_ON]-(r:Route)
+            WHERE toFloat(r.Distance_KM) > 1950
+            RETURN 
+                toString(elementId(b)) AS branchOfficeId,
+                b,
+                toString(elementId(pr)) AS providerId,
+                pr,
+                toString(elementId(r)) AS routeId,
+                r
+            ORDER BY r.Distance_KM DESC
         `;
 
         const result = await session.run(query);
 
-        const branches = result.records.map(record => ({
-            id: record.get('id'),
-            ...record.get('b').properties,
-            priority: record.get('p.Priority').toNumber()
-        }));
+        const branches = result.records.map(record => {
+            const branchProperties = record.get('b').properties;
+            const providerProperties = record.get('pr').properties;
+            const routeProperties = record.get('r').properties;
+
+            return {
+                branchOffice: {
+                    id: record.get('branchOfficeId'),
+                    ...branchProperties
+                },
+                provider: {
+                    id: record.get('providerId'),
+                    ...providerProperties
+                },
+                route: {
+                    id: record.get('routeId'),
+                    ...routeProperties,
+                    Distance_KM: parseFloat(routeProperties.Distance_KM) // Aseguramos que es número
+                }
+            };
+        });
 
         res.json(branches);
 
     } catch (error) {
+        console.error("❌ Error al obtener sucursales con mala distribución:", error);
         res.status(500).json({ message: 'Error al obtener sucursales con mala distribución', error });
     } finally {
         await session.close();
