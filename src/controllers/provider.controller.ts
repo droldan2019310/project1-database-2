@@ -55,55 +55,79 @@ export const getProviders = async (req: Request, res: Response): Promise<void> =
 
         const offset = (pageNumber - 1) * limitNumber;
 
-        // 🔍 Query para obtener proveedores con sus relaciones y sucursales asociadas
+        // 🔍 Query para obtener proveedores y sus relaciones
         const query = `
-            MATCH (p:Provider)-[r:PROVIDES_TO]->(b:BranchOffice)
+            MATCH (p:Provider)
             WHERE p.Voided = false
+            
+            OPTIONAL MATCH (p)-[r1:PROVIDES_TO]->(b:BranchOffice)
+            OPTIONAL MATCH (p)-[r2:USE]->(route:Route)
+            OPTIONAL MATCH (p)-[r3:RECEIVES]->(order:Buy_Order)
+
             RETURN 
                 toString(elementId(p)) AS providerId, 
-                p, 
-                type(r) AS relationshipType,
-                toString(elementId(b)) AS branchOfficeId, 
-                b
+                p,
+                
+                // BranchOffice
+                collect(CASE WHEN b IS NOT NULL THEN {
+                    id: toString(elementId(b)),
+                    ID: b.ID,
+                    Name: b.Name,
+                    Location: b.Location,
+                    Income: b.Income,
+                    Voided: b.Voided,
+                    relationshipType: type(r1)
+                } ELSE null END) AS branchOffices,
+
+                // Route
+                collect(CASE WHEN route IS NOT NULL THEN {
+                    id: toString(elementId(route)),
+                    ID: route.ID,
+                    Name: route.Name,
+                    Distance_KM: route.Distance_KM,
+                    Company: route.Company,
+                    Start_date: route.Start_date,
+                    End_date: route.End_date,
+                    Voided: route.Voided,
+                    relationshipType: type(r2)
+                } ELSE null END) AS routes,
+
+                // BuyOrder
+                collect(CASE WHEN order IS NOT NULL THEN {
+                    id: toString(elementId(order)),
+                    ID: order.ID,
+                    Date: order.Date,
+                    Total: order.Total,
+                    Status: order.Status,
+                    Items: order.Items,
+                    Voided: order.Voided,
+                    relationshipType: type(r3)
+                } ELSE null END) AS buyOrders
+
             ORDER BY p.Name ASC
             SKIP ${offset} LIMIT ${limitNumber}
         `;
 
         const result = await session.run(query);
 
-        // Mapeo de resultados: agrupamos por proveedor
-        const providerMap = new Map<string, any>();
+        const providers = result.records.map(record => {
+            const provider = record.get('p').properties;
 
-        result.records.forEach(record => {
-            const providerId = record.get('providerId');
-            const providerProperties = record.get('p').properties;
-            const branchOfficeId = record.get('branchOfficeId');
-            const branchOfficeProperties = record.get('b').properties;
-
-            if (!providerMap.has(providerId)) {
-                providerMap.set(providerId, {
-                    id: providerId,
-                    ...providerProperties,
-                    branchOffices: []
-                });
-            }
-
-            providerMap.get(providerId).branchOffices.push({
-                id: branchOfficeId,
-                ...branchOfficeProperties,
-                relationshipType: record.get('relationshipType')
-            });
+            return {
+                id: record.get('providerId'),
+                ...provider,
+                branchOffices: (record.get('branchOffices') || []).filter((bo: any) => bo !== null),
+                routes: (record.get('routes') || []).filter((r: any) => r !== null),
+                buyOrders: (record.get('buyOrders') || []).filter((bo: any) => bo !== null),
+            };
         });
 
-        const providers = Array.from(providerMap.values());
-
-        // 📊 Query para contar todos los proveedores (independiente de la paginación)
+        // 📊 Query para contar todos los proveedores
         const countResult = await session.run(`
             MATCH (p:Provider)
             WHERE p.Voided = false
             RETURN count(p) AS total
         `);
-
         const totalProviders = countResult.records[0]?.get("total").toNumber() || 0;
 
         res.json({
@@ -121,6 +145,97 @@ export const getProviders = async (req: Request, res: Response): Promise<void> =
         await session.close();
     }
 };
+
+
+export const searchProviderByName = async (req: Request, res: Response): Promise<void> => {
+    const driver = Neo4jDriverSingleton.getInstance();
+    const session = driver.session();
+
+    try {
+        const { name } = req.params;
+
+        if (!name) {
+            res.status(400).json({ message: "El parámetro 'name' es obligatorio" });
+            return;
+        }
+
+        // 🔍 Query para buscar proveedores por nombre parcial (case insensitive)
+        const query = `
+            MATCH (p:Provider)
+            WHERE p.Voided = false AND toLower(p.Name) CONTAINS toLower($name)
+            
+            OPTIONAL MATCH (p)-[r1:PROVIDES_TO]->(b:BranchOffice)
+            OPTIONAL MATCH (p)-[r2:USE]->(route:Route)
+            OPTIONAL MATCH (p)-[r3:RECEIVES]->(order:Buy_Order)
+
+            RETURN 
+                toString(elementId(p)) AS providerId, 
+                p,
+                
+                // BranchOffice
+                collect(CASE WHEN b IS NOT NULL THEN {
+                    id: toString(elementId(b)),
+                    ID: b.ID,
+                    Name: b.Name,
+                    Location: b.Location,
+                    Income: b.Income,
+                    Voided: b.Voided,
+                    relationshipType: type(r1)
+                } ELSE null END) AS branchOffices,
+
+                // Route
+                collect(CASE WHEN route IS NOT NULL THEN {
+                    id: toString(elementId(route)),
+                    ID: route.ID,
+                    Name: route.Name,
+                    Distance_KM: route.Distance_KM,
+                    Company: route.Company,
+                    Start_date: route.Start_date,
+                    End_date: route.End_date,
+                    Voided: route.Voided,
+                    relationshipType: type(r2)
+                } ELSE null END) AS routes,
+
+                // BuyOrder
+                collect(CASE WHEN order IS NOT NULL THEN {
+                    id: toString(elementId(order)),
+                    ID: order.ID,
+                    Date: order.Date,
+                    Total: order.Total,
+                    Status: order.Status,
+                    Items: order.Items,
+                    Voided: order.Voided,
+                    relationshipType: type(r3)
+                } ELSE null END) AS buyOrders
+        `;
+
+        const result = await session.run(query, { name });
+
+        const providers = result.records.map(record => {
+            const provider = record.get('p').properties;
+
+            return {
+                id: record.get('providerId'),
+                ...provider,
+                branchOffices: (record.get('branchOffices') || []).filter((bo: any) => bo !== null),
+                routes: (record.get('routes') || []).filter((r: any) => r !== null),
+                buyOrders: (record.get('buyOrders') || []).filter((bo: any) => bo !== null),
+            };
+        });
+
+        res.json({
+            count: providers.length,
+            providers
+        });
+
+    } catch (error) {
+        console.error("❌ Error al buscar proveedor por nombre:", error);
+        res.status(500).json({ message: "Error al buscar proveedor", error });
+    } finally {
+        await session.close();
+    }
+};
+
 
 
 // Soft delete (marcar proveedor como inactivo)
@@ -208,4 +323,122 @@ export const getTopProvidersBySales = async (_req: Request, res: Response): Prom
     } finally {
         await session.close();
     }
+};
+
+
+
+
+export const createProviderRelationship = async (req: Request, res: Response): Promise<void> => {
+    const session = Neo4jDriverSingleton.getInstance().session();
+
+    try {
+        const {
+            sourceId,
+            targetId,
+            sourceType,
+            targetType,
+            quantity_of_orders_in_time,
+            type_product,
+            range_client,
+            cost_of_operation,
+            status_payment,
+            type_vehicle
+        } = req.body;
+
+        console.log("📥 Request Body:", req.body);
+
+        if (!sourceId || !targetId || !sourceType || !targetType) {
+            res.status(400).json({ message: "Faltan parámetros obligatorios." });
+            return;
+        }
+
+        const relationshipType = getProviderRelationshipType(sourceType, targetType);
+
+        if (!relationshipType) {
+            res.status(400).json({ message: "Relación inválida." });
+            return;
+        }
+
+        let query = "";
+        let params: Record<string, any> = {
+            sourceId,
+            targetId
+        };
+        let createdRelation = {};
+
+        if (relationshipType === "PROVIDES_TO") {
+            if (!quantity_of_orders_in_time || !type_product || !range_client) {
+                res.status(400).json({ message: "Faltan campos para PROVIDES_TO." });
+                return;
+            }
+
+            query = `
+                MATCH (prov:Provider), (bo:BranchOffice)
+                WHERE elementId(prov) = $sourceId AND elementId(bo) = $targetId
+                CREATE (prov)-[r:PROVIDES_TO {
+                    Quantity_of_orders_in_time: $quantity_of_orders_in_time,
+                    Type_product: $type_product,
+                    Range_client: $range_client
+                }]->(bo)
+                RETURN type(r) as relationshipType, r
+            `;
+            params = {
+                ...params,
+                quantity_of_orders_in_time,
+                type_product,
+                range_client
+            };
+        } 
+        else if (relationshipType === "USE") {
+            if (!cost_of_operation || !status_payment || !type_vehicle) {
+                res.status(400).json({ message: "Faltan campos para USE." });
+                return;
+            }
+
+            query = `
+                MATCH (prov:Provider), (route:Route)
+                WHERE elementId(prov) = $sourceId AND elementId(route) = $targetId
+                CREATE (prov)-[r:USE {
+                    Cost_of_operation: $cost_of_operation,
+                    Status_payment: $status_payment,
+                    Type_vehicle: $type_vehicle
+                }]->(route)
+                RETURN type(r) as relationshipType, r
+            `;
+            params = {
+                ...params,
+                cost_of_operation,
+                status_payment,
+                type_vehicle
+            };
+        }
+
+        const result = await session.run(query, params);
+        createdRelation = result.records[0]?.get('r').properties || {};
+
+        res.status(201).json({
+            message: "Relación creada exitosamente.",
+            sourceId,
+            targetId,
+            relationshipType,
+            properties: createdRelation
+        });
+
+    } catch (error) {
+        console.error("❌ Error al crear relación (Provider):", error);
+        res.status(500).json({ message: "Error al crear relación.", error });
+    } finally {
+        await session.close();
+    }
+};
+
+// Función que mapea source y target a un relationshipType para providers
+const getProviderRelationshipType = (sourceType: string, targetType: string): string | null => {
+    if (sourceType === "provider" && targetType === "branchOffice") {
+        return "PROVIDES_TO";
+    }
+    if (sourceType === "provider" && targetType === "route") {
+        return "USE";
+    }
+    return null;
 };

@@ -6,7 +6,8 @@ import {
     softDeleteBranchOffice,
     top5BranchesWithMostSales,
     branchesNeedingBetterDistribution,
-    topProductsPerBranch
+    topProductsPerBranch,
+    createRelationshipBranch
 } from '../controllers/branchOffice.controller';
 
 const router = Router();
@@ -16,6 +17,7 @@ router.post('/', createBranchOffice);
 router.get('/', getAllBranchOffices);
 router.put('/:id', updateBranchOffice);
 router.delete('/:id', softDeleteBranchOffice);
+router.post('/relationship', createRelationshipBranch);
 
 // Consultas Especiales
 router.get('/top-sales', top5BranchesWithMostSales);

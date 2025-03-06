@@ -7,7 +7,8 @@ import {
     softDeleteRoute,
     mostLoadedRoute,
     longestTimeRoute,
-    longestDistanceRoute
+    longestDistanceRoute,
+    getRoutesByCompany
 } from '../controllers/route.controller';
 
 const router = Router();
@@ -22,5 +23,6 @@ router.delete('/:id', softDeleteRoute);
 router.get('/most-loaded', mostLoadedRoute);
 router.get('/longest-time', longestTimeRoute);
 router.get('/longest-distance', longestDistanceRoute);
+router.get('/search/:company', getRoutesByCompany);
 
 export default router;

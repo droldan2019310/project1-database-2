@@ -61,17 +61,21 @@ export const getAllBranchOffices = async (req: Request, res: Response): Promise<
 
         const offset = (pageNumber - 1) * limitNumber;
 
-        // 🔍 Query para traer sucursales y sus facturas asociadas (si tienen), usando la relación 'emits'
+        // Query actualizada para traer sucursales con facturas (EMITS) y órdenes de compra (CREATES_A)
         const query = `
             MATCH (b:BranchOffice)
             WHERE b.Voided = false
-            OPTIONAL MATCH (b)-[r:EMITS]->(i:Invoice)
+            OPTIONAL MATCH (b)-[emits:EMITS]->(i:Invoice)
+            OPTIONAL MATCH (b)-[creates:CREATES_A]->(bo:BuyOrder)
             RETURN 
                 toString(elementId(b)) AS branchOfficeId, 
                 b, 
                 toString(elementId(i)) AS invoiceId, 
                 i, 
-                type(r) AS relationshipType
+                type(emits) AS emitsRelationship,
+                toString(elementId(bo)) AS buyOrderId, 
+                bo, 
+                type(creates) AS createsRelationship
             ORDER BY b.Name ASC
             SKIP ${offset} LIMIT ${limitNumber}
         `;
@@ -89,17 +93,30 @@ export const getAllBranchOffices = async (req: Request, res: Response): Promise<
                 branchMap.set(branchOfficeId, {
                     id: branchOfficeId,
                     ...branchProperties,
-                    invoices: []  // Inicialmente vacío
+                    invoices: [],
+                    buyOrders: []
                 });
             }
 
+            // Facturas (Invoices)
             const invoiceId = record.get('invoiceId');
             if (invoiceId) {
                 const invoiceProperties = record.get('i').properties;
                 branchMap.get(branchOfficeId).invoices.push({
                     id: invoiceId,
                     ...invoiceProperties,
-                    relationshipType: record.get('relationshipType')
+                    relationshipType: record.get('emitsRelationship')
+                });
+            }
+
+            // Órdenes de compra (BuyOrders)
+            const buyOrderId = record.get('buyOrderId');
+            if (buyOrderId) {
+                const buyOrderProperties = record.get('bo').properties;
+                branchMap.get(branchOfficeId).buyOrders.push({
+                    id: buyOrderId,
+                    ...buyOrderProperties,
+                    relationshipType: record.get('createsRelationship')
                 });
             }
         });
@@ -130,6 +147,10 @@ export const getAllBranchOffices = async (req: Request, res: Response): Promise<
         await session.close();
     }
 };
+
+
+
+
 
 
 
@@ -303,3 +324,109 @@ export const topProductsPerBranch = async (req: Request, res: Response): Promise
         await session.close();
     }
 };
+
+
+
+export const createRelationshipBranch = async (req: Request, res: Response): Promise<void> => {
+    const session = Neo4jDriverSingleton.getInstance().session();
+
+    try {
+        const {
+            sourceId,        // elementId() de la BranchOffice
+            targetId,        // elementId() de la Invoice o BuyOrder
+            targetType,      // "invoice" o "buyOrder"
+            nit_remitente,
+            direccion_remitente,
+            telefono_remitente,
+            date_created,
+            cashier,
+            type_payment
+        } = req.body;
+
+        console.log("📥 Request Body:", req.body);
+
+        if (!sourceId || !targetId || !targetType) {
+            res.status(400).json({ message: "Faltan parámetros obligatorios." });
+            return;
+        }
+
+        let query = "";
+        let params: Record<string, any> = { sourceId, targetId };
+        let createdRelation = {};
+
+        if (targetType === "invoice") {
+            if (!nit_remitente || !direccion_remitente || !telefono_remitente) {
+                res.status(400).json({ message: "Faltan campos para la relación EMITS." });
+                return;
+            }
+
+            query = `
+                MATCH (branch:BranchOffice), (invoice:Invoice)
+                WHERE elementId(branch) = $sourceId AND elementId(invoice) = $targetId
+                CREATE (branch)-[r:EMITS {
+                    NIT_remitente: $nit_remitente,
+                    Direccion_remitente: $direccion_remitente,
+                    Telefono_remitente: $telefono_remitente
+                }]->(invoice)
+                RETURN type(r) as relationshipType, r
+            `;
+
+            params = {
+                ...params,
+                nit_remitente,
+                direccion_remitente,
+                telefono_remitente
+            };
+        } 
+        else if (targetType === "buyOrder") {
+            if (!date_created || !cashier || !type_payment) {
+                res.status(400).json({ message: "Faltan campos para la relación CREATES_A." });
+                return;
+            }
+
+            // Neo4j necesita el date como { year, month, day }
+            const [year, month, day] = date_created.split('-').map(Number);
+
+            query = `
+                MATCH (branch:BranchOffice), (buyOrder:BuyOrder)
+                WHERE elementId(branch) = "${sourceId}" AND elementId(buyOrder) = "${targetId}"
+                CREATE (branch)-[r:CREATES_A {
+                    Date_created: date({ year: ${year}, month: ${month}, day: ${day} }),
+                    Cashier: "${cashier}",
+                    Type_payment: "${type_payment}"
+                }]->(buyOrder)
+                RETURN type(r) as relationshipType, r
+            `;
+
+
+            params = {
+                
+            };
+        } 
+        else {
+            res.status(400).json({ message: "Relación inválida." });
+            return;
+        }
+
+        console.log('📄 Ejecutando query:', query);
+        console.log('🔗 Con parámetros:', params);
+
+        const result = await session.run(query, params);
+        createdRelation = result.records[0]?.get('r').properties || {};
+
+        res.status(201).json({
+            message: "Relación creada exitosamente.",
+            sourceId,
+            targetId,
+            relationshipType: result.records[0]?.get('relationshipType'),
+            properties: createdRelation
+        });
+
+    } catch (error) {
+        console.error("❌ Error al crear relación (BranchOffice):", error);
+        res.status(500).json({ message: "Error al crear relación.", error });
+    } finally {
+        await session.close();
+    }
+};
+

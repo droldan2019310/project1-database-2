@@ -4,25 +4,29 @@ import { routeSchema } from '../schemas/route.schema';
 import { z } from 'zod';
 
 // Crear ruta
+
+
 export const createRoute = async (req: Request, res: Response): Promise<void> => {
     const session = Neo4jDriverSingleton.getInstance().session();
 
     try {
         const validatedData = routeSchema.parse(req.body);
-        const { quantity, delivery_name, arrive_date, arrive_hour } = validatedData;
+        const { quantity, delivery_name, arrive_date, arrive_hour, company, distance_km } = validatedData;
 
         const query = `
             CREATE (r:Route {
                 Quantity: $quantity,
-                Delivery_name: $delivery_name,
+                Name: $delivery_name,
                 Arrive_date: date($arrive_date),
                 Arrive_hour: $arrive_hour,
+                Company: $company,
+                Distance_KM: $distance_km,
                 Voided: false
             })
             RETURN elementId(r) AS id, r
         `;
 
-        const result = await session.run(query, { quantity, delivery_name, arrive_date, arrive_hour });
+        const result = await session.run(query, { quantity, delivery_name, arrive_date, arrive_hour, company, distance_km });
         const record = result.records[0];
 
         res.status(201).json({ id: record.get('id'), ...record.get('r').properties });
@@ -31,6 +35,7 @@ export const createRoute = async (req: Request, res: Response): Promise<void> =>
         if (error instanceof z.ZodError) {
             res.status(400).json({ message: 'Error de validación', errors: error.errors });
         } else {
+            console.error("❌ Error al crear ruta:", error);
             res.status(500).json({ message: 'Error al crear ruta', error });
         }
     } finally {
@@ -148,6 +153,87 @@ export const getAllRoutes = async (req: Request, res: Response): Promise<void> =
 };
 
 
+export const getRoutesByCompany = async (req: Request, res: Response): Promise<void> => {
+    const session = Neo4jDriverSingleton.getInstance().session();
+
+    try {
+        const { company } = req.params; // La empresa viene como parámetro de ruta (path param)
+
+        if (!company || company.trim() === "") {
+            res.status(400).json({ message: "El parámetro 'company' es obligatorio." });
+            return;
+        }
+
+        const query = `
+            MATCH (r:Route)
+            WHERE toLower(r.Company) CONTAINS toLower($company) AND r.Voided = false
+            OPTIONAL MATCH (r)-[leavesOn:LEAVES_ON]->(b:BranchOffice)
+            OPTIONAL MATCH (r)-[carry:CARRY]->(p:Product)
+            RETURN 
+                toString(elementId(r)) AS routeId, 
+                r,
+                toString(elementId(b)) AS branchOfficeId,
+                b,
+                type(leavesOn) AS leavesOnType,
+                toString(elementId(p)) AS productId,
+                p,
+                type(carry) AS carryType
+        `;
+
+        const result = await session.run(query, { company });
+
+        // Mapeo por cada ruta, agregando branch office y products si existen
+        const routeMap = new Map<string, any>();
+
+        result.records.forEach(record => {
+            const routeId = record.get('routeId');
+            const routeProperties = record.get('r').properties;
+
+            if (!routeMap.has(routeId)) {
+                routeMap.set(routeId, {
+                    id: routeId,
+                    ...routeProperties,
+                    branchOffice: null,     // Default si no hay relación
+                    products: []             // Default vacío si no hay relación
+                });
+            }
+
+            // Manejo de la relación leaves_on (branch office)
+            const branchOfficeId = record.get('branchOfficeId');
+            if (branchOfficeId) {
+                const branchOfficeProperties = record.get('b').properties;
+                routeMap.get(routeId).branchOffice = {
+                    id: branchOfficeId,
+                    ...branchOfficeProperties,
+                    relationshipType: record.get('leavesOnType')
+                };
+            }
+
+            // Manejo de la relación carry (products)
+            const productId = record.get('productId');
+            if (productId) {
+                const productProperties = record.get('p').properties;
+                routeMap.get(routeId).products.push({
+                    id: productId,
+                    ...productProperties,
+                    relationshipType: record.get('carryType')
+                });
+            }
+        });
+
+        const routes = Array.from(routeMap.values());
+
+        res.json({ routes });
+
+    } catch (error) {
+        console.error("❌ Error al buscar rutas por compañía:", error);
+        res.status(500).json({ message: 'Error al buscar rutas por compañía', error });
+    } finally {
+        await session.close();
+    }
+};
+
+
 // Actualizar ruta
 export const updateRoute = async (req: Request, res: Response): Promise<void> => {
     const { id } = req.params;
@@ -160,7 +246,7 @@ export const updateRoute = async (req: Request, res: Response): Promise<void> =>
         const query = `
             MATCH (r:Route) WHERE elementId(r) = $id
             SET r.Quantity = $quantity,
-                r.Delivery_name = $delivery_name,
+                r.Name = $delivery_name,
                 r.Arrive_date = date($arrive_date),
                 r.Arrive_hour = $arrive_hour
             RETURN elementId(r) AS id, r

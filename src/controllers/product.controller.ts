@@ -66,41 +66,69 @@ export const getAllProducts = async (req: Request, res: Response): Promise<void>
           return;
       }
 
-      const offset = (pageNumber - 1) * limitNumber; // ✅ Ya es un número entero puro
+      const offset = (pageNumber - 1) * limitNumber;
 
+      // 🔍 Query con relaciones directo con offset y limit concatenados
       const query = `
           MATCH (p:Product)
           WHERE p.Voided = false
-          RETURN toString(elementId(p)) AS id, p
+          OPTIONAL MATCH (p)-[:BELONGS_TO]->(provider:Provider)
+          OPTIONAL MATCH (p)-[:EXIST_ON]->(branch:BranchOffice)
+          RETURN 
+              toString(elementId(p)) AS productId,
+              p,
+              toString(elementId(provider)) AS providerId,
+              provider,
+              toString(elementId(branch)) AS branchId,
+              branch
           ORDER BY p.Name ASC
           SKIP ${offset} LIMIT ${limitNumber}
       `;
 
-      console.log("🔍 Ejecutando query en Neo4j:");
-      console.log(query);
-
       const result = await session.run(query);
-      const products = result.records.map(record => {
-        const properties = record.get('p').properties;
-        return {
-            id: record.get('id'), // esto ya es un string por el toString(elementId(p))
-            Category: properties.Category,
-            Price: properties.Price,
-            Expiration_date: properties.Expiration_date,
-            Voided: properties.Voided,
-            Name: properties.Name,
-            TagsArray: properties.TagsArray
-        };
+
+      const productMap = new Map<string, any>();
+
+      result.records.forEach(record => {
+          const productId = record.get('productId');
+          const productProps = record.get('p').properties;
+
+          if (!productMap.has(productId)) {
+              productMap.set(productId, {
+                  id: productId,
+                  ...productProps,
+                  provider: null,
+                  branchOffices: []
+              });
+          }
+
+          const providerId = record.get('providerId');
+          if (providerId) {
+              productMap.get(productId).provider = {
+                  id: providerId,
+                  ...record.get('provider').properties
+              };
+          }
+
+          const branchId = record.get('branchId');
+          if (branchId) {
+              productMap.get(productId).branchOffices.push({
+                  id: branchId,
+                  ...record.get('branch').properties
+              });
+          }
       });
 
-      // 📌 Obtener total de productos
+      const products = Array.from(productMap.values());
+
+      // 📊 Contar total de productos
       const countResult = await session.run(`
           MATCH (p:Product)
           WHERE p.Voided = false
           RETURN count(p) AS total
       `);
+
       const totalProducts = countResult.records[0]?.get("total").toNumber() || 0;
-      
 
       res.json({
           page: pageNumber,
@@ -117,6 +145,7 @@ export const getAllProducts = async (req: Request, res: Response): Promise<void>
       await session.close();
   }
 };
+
 
 // Actualizar producto
 export const updateProduct = async (req: Request, res: Response): Promise<void> => {
@@ -351,3 +380,173 @@ export const createProductRelationship = async (req: Request, res: Response): Pr
       await session.close();
   }
 };
+
+
+export const getProductByName = async (req: Request, res: Response): Promise<void> => {
+  const driver = Neo4jDriverSingleton.getInstance();
+  const session = driver.session();
+
+  try {
+      const { name } = req.params;
+
+      if (!name) {
+          res.status(400).json({ message: "El nombre del producto es obligatorio" });
+          return;
+      }
+
+      const query = `
+          MATCH (p:Product {Name: $name})
+          WHERE p.Voided = false
+          OPTIONAL MATCH (p)-[:BELONGS_TO]->(pr:Provider)
+          OPTIONAL MATCH (p)-[:EXISTS_ON]->(b:BranchOffice)
+
+          RETURN 
+              toString(elementId(p)) AS productId,
+              p,
+              toString(elementId(pr)) AS providerId,
+              pr,
+              toString(elementId(b)) AS branchId,
+              b
+      `;
+
+      const result = await session.run(query, { name });
+
+      if (result.records.length === 0) {
+          res.status(404).json({ message: "Producto no encontrado" });
+          return;
+      }
+
+      const productData = {
+          id: result.records[0].get('productId'),
+          ...result.records[0].get('p').properties,
+          provider: [],
+          branchOffices: []
+      };
+
+      result.records.forEach(record => {
+          if (record.get('providerId') && record.get('pr')) {
+              productData.provider = {
+                  id: record.get('providerId'),
+                  ...record.get('pr').properties
+              };
+          }
+
+          if (record.get('branchId') && record.get('b')) {
+              productData.branchOffices.push({
+                  id: record.get('branchId'),
+                  ...record.get('b').properties
+              });
+          }
+      });
+
+      res.json(productData);
+
+  } catch (error) {
+      console.error("❌ Error al buscar producto por nombre:", error);
+      res.status(500).json({ message: "Error al buscar producto", error });
+  } finally {
+      await session.close();
+  }
+};
+
+
+export const createProductRelationshipProducts = async (req: Request, res: Response): Promise<void> => {
+    const session = Neo4jDriverSingleton.getInstance().session();
+
+    try {
+        const {
+            sourceId,
+            targetId,
+            sourceType,
+            targetType,
+            create_date,
+            time_to_create,
+            actual_stock,
+            buy_date,
+            minimum_stock
+        } = req.body;
+
+        console.log("📥 Request Body:", req.body);
+
+        if (!sourceId || !targetId || !sourceType || !targetType) {
+            res.status(400).json({ message: "Faltan parámetros obligatorios." });
+            return;
+        }
+
+        const relationshipType = getRelationshipType(sourceType, targetType);
+
+        if (!relationshipType) {
+            res.status(400).json({ message: "Relación inválida." });
+            return;
+        }
+
+        let query = "";
+        let params: Record<string, any> = { sourceId, targetId };
+        let createdRelation = {};
+
+        if (relationshipType === "BELONGS_TO") {
+            if (!create_date || !time_to_create) {
+                res.status(400).json({ message: "Faltan campos para BELONGS_TO." });
+                return;
+            }
+            query = `
+                MATCH (p:Product), (prov:Provider)
+                WHERE elementId(p) = $sourceId AND elementId(prov) = $targetId
+                CREATE (p)-[r:BELONGS_TO {
+                    Create_date: date($create_date),
+                    Time_to_create: $time_to_create
+                }]->(prov)
+                RETURN type(r) as relationshipType, r
+            `;
+            params = { ...params, create_date, time_to_create };
+        } 
+        else if (relationshipType === "EXISTS_ON") {
+            if (!actual_stock || !buy_date || !minimum_stock) {
+                res.status(400).json({ message: "Faltan campos para EXISTS_ON." });
+                return;
+            }
+            query = `
+                MATCH (p:Product), (bo:BranchOffice)
+                WHERE elementId(p) = $sourceId AND elementId(bo) = $targetId
+                CREATE (p)-[r:EXISTS_ON {
+                    Actual_stock: $actual_stock,
+                    Buy_date: date($buy_date),
+                    Minimum_stock: $minimum_stock
+                }]->(bo)
+                RETURN type(r) as relationshipType, r
+            `;
+            params = { ...params, actual_stock, buy_date, minimum_stock };
+        }
+
+        const result = await session.run(query, params);
+        createdRelation = result.records[0]?.get('r').properties || {};
+
+        res.status(201).json({
+            message: "Relación creada exitosamente.",
+            sourceId,
+            targetId,
+            relationshipType,
+            properties: createdRelation
+        });
+
+    } catch (error) {
+        console.error("❌ Error al crear relación:", error);
+        res.status(500).json({ message: "Error al crear relación.", error });
+    } finally {
+        await session.close();
+    }
+};
+
+// Función que mapea source y target a un relationshipType
+const getRelationshipType = (sourceType: string, targetType: string): string | null => {
+    if (sourceType === "product" && targetType === "provider") {
+        return "BELONGS_TO";
+    }
+    if (sourceType === "product" && targetType === "branchOffice") {
+        return "EXISTS_ON";
+    }
+    return null;
+};
+
+
+
